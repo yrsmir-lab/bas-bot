@@ -26,9 +26,15 @@ app.listen(port, (err) => {
 });
 
 if (process.env["NODE_ENV"] === "production") {
-  startBot().catch((err) => {
-    logger.error({ err }, "Failed to start bot");
-  });
+  const startBotWithRetry = async () => {
+    try {
+      await startBot();
+    } catch (err) {
+      logger.error({ err }, "Failed to start bot, restarting in 10 seconds...");
+      setTimeout(startBotWithRetry, 10000);
+    }
+  };
+  startBotWithRetry();
 } else {
   logger.info("Development mode: Telegram bot polling disabled to avoid conflict with production");
 }
