@@ -1,7 +1,7 @@
 import TelegramBot from "node-telegram-bot-api";
 import Groq from "groq-sdk";
 import { logger } from "../lib/logger";
-import { initDb, loadNotes, addNote, deleteNote, type ContentBlock } from "./notes";
+import { initDb, loadNotes, addNote, deleteNote, updateNote, type ContentBlock } from "./notes";
 
 async function buildMatchingPrompt(): Promise<string> {
   const notes = await loadNotes();
@@ -23,6 +23,7 @@ ${list}
 interface Draft {
   title: string;
   blocks: ContentBlock[];
+  editId?: number;
 }
 
 const drafts = new Map<number, Draft>();
@@ -68,7 +69,7 @@ function attachHandlers(bot: TelegramBot, groq: Groq): void {
 
   bot.onText(/\/help/, async (msg) => {
     const adminPart = isAdmin(msg.from?.id)
-      ? "\n\n📝 Управление заметками:\n/addnote [название] — начать заметку\n/done — сохранить\n/cancel — отменить\n/notes — список\n/delnote [номер] — удалить\n/backup — скачать все заметки\n/restore — восстановить (отправь файл с подписью /restore)"
+      ? "\n\n📝 Управление заметками:\n/addnote [название] — начать заметку\n/editnote [номер] — редактировать заметку\n/done — сохранить\n/cancel — отменить\n/notes — список\n/delnote [номер] — удалить\n/backup — скачать все заметки\n/restore — восстановить (отправь файл с подписью /restore)"
       : "";
     await bot.sendMessage(msg.chat.id, `/start — новый диалог\n/help — справка${adminPart}`);
   });
@@ -81,6 +82,23 @@ function attachHandlers(bot: TelegramBot, groq: Groq): void {
     await bot.sendMessage(
       chatId,
       `📝 Режим создания заметки${title ? ` "${title}"` : ""}.\n\nОтправляй текст и скрины в нужном порядке.\n/done — сохранить, /cancel — отменить.`
+    );
+  });
+
+  bot.onText(/\/editnote (\d+)/, async (msg, match) => {
+    if (!isAdmin(msg.from?.id)) return;
+    const chatId = msg.chat.id;
+    const num = parseInt(match?.[1] ?? "0", 10);
+    const notes = await loadNotes();
+    if (num < 1 || num > notes.length) {
+      await bot.sendMessage(chatId, "Неверный номер. Используй /notes чтобы увидеть список.");
+      return;
+    }
+    const note = notes[num - 1]!;
+    drafts.set(chatId, { title: note.title, blocks: [], editId: note.id });
+    await bot.sendMessage(
+      chatId,
+      `✏️ Редактирование заметки #${num} "${note.title}".\n\nСтарое содержимое будет ПОЛНОСТЬЮ заменено новым.\nОтправляй текст и скрины в нужном порядке.\n/done — сохранить, /cancel — отменить.`
     );
   });
 
@@ -101,14 +119,24 @@ function attachHandlers(bot: TelegramBot, groq: Groq): void {
       draft.title = firstText ? firstText.content.slice(0, 60) : "Заметка";
     }
     drafts.delete(chatId);
-    await addNote(draft.title, draft.blocks);
-    const notes = await loadNotes();
+
     const imgs = draft.blocks.filter((b) => b.type === "image").length;
     const txts = draft.blocks.filter((b) => b.type === "text").length;
-    await bot.sendMessage(
-      chatId,
-      `✅ Заметка #${notes.length} сохранена (${txts} текст, ${imgs} скрин).`
-    );
+
+    if (draft.editId) {
+      await updateNote(draft.editId, draft.title, draft.blocks);
+      await bot.sendMessage(
+        chatId,
+        `✅ Заметка обновлена (${txts} текст, ${imgs} скрин).`
+      );
+    } else {
+      await addNote(draft.title, draft.blocks);
+      const notes = await loadNotes();
+      await bot.sendMessage(
+        chatId,
+        `✅ Заметка #${notes.length} сохранена (${txts} текст, ${imgs} скрин).`
+      );
+    }
   });
 
   bot.onText(/\/cancel/, async (msg) => {
@@ -130,7 +158,7 @@ function attachHandlers(bot: TelegramBot, groq: Groq): void {
       const imgs = n.blocks.filter((b) => b.type === "image").length;
       return `${i + 1}. ${n.title}${imgs > 0 ? ` 📷×${imgs}` : ""}`;
     }).join("\n\n");
-    await bot.sendMessage(chatId, `Заметки:\n\n${list}\n\nУдалить: /delnote [номер]`);
+    await bot.sendMessage(chatId, `Заметки:\n\n${list}\n\nУдалить: /delnote [номер]\nРедактировать: /editnote [номер]`);
   });
 
   bot.onText(/\/backup/, async (msg) => {
